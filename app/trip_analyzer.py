@@ -231,10 +231,15 @@ class TripAnalyzer:
         
         average_speed_kmh = (distance_km / (duration_seconds / 3600)) if duration_seconds > 0 and distance_km > 0 else 0.0
 
-        ev_distance_km = (hdc.ev_distance / 1000) if hdc and hdc.ev_distance is not None else getattr(trip, "ev_distance", 0.0)
+        hdc_ev_distance = getattr(hdc, "ev_distance", None)
+        ev_distance_km = (hdc_ev_distance / 1000) if hdc_ev_distance is not None else getattr(trip, "ev_distance", 0.0)
         
         raw_ev_duration = getattr(trip, "ev_duration", 0) or 0
         fallback_ev_seconds = raw_ev_duration.total_seconds() if hasattr(raw_ev_duration, "total_seconds") else float(raw_ev_duration)
+        hdc_ev_time = getattr(hdc, "ev_time", None)
+        hdc_charge_dist = getattr(hdc, "charge_dist", None)
+        hdc_eco_dist = getattr(hdc, "eco_dist", None)
+        hdc_power_dist = getattr(hdc, "power_dist", None)
         
         # 3. Route Calculation
         route_data = None
@@ -291,13 +296,13 @@ class TripAnalyzer:
             "score_advice": scores.advice if scores else None,
             "score_constant_speed": scores.constant_speed if scores else None,
             "ev_distance_km": ev_distance_km,
-            "ev_duration_seconds": hdc.ev_time if hdc and hdc.ev_time is not None else int(fallback_ev_seconds),
-            "hdc_charge_duration_seconds": hdc.charge_time if hdc else None,
-            "hdc_charge_distance_km": (hdc.charge_dist / 1000) if hdc and hdc.charge_dist is not None else None,
-            "hdc_eco_duration_seconds": hdc.eco_time if hdc else None,
-            "hdc_eco_distance_km": (hdc.eco_dist / 1000) if hdc and hdc.eco_dist is not None else None,
-            "hdc_power_duration_seconds": hdc.power_time if hdc else None,
-            "hdc_power_distance_km": (hdc.power_dist / 1000) if hdc and hdc.power_dist is not None else None,
+            "ev_duration_seconds": hdc_ev_time if hdc_ev_time is not None else int(fallback_ev_seconds),
+            "hdc_charge_duration_seconds": getattr(hdc, "charge_time", None),
+            "hdc_charge_distance_km": (hdc_charge_dist / 1000) if hdc_charge_dist is not None else None,
+            "hdc_eco_duration_seconds": getattr(hdc, "eco_time", None),
+            "hdc_eco_distance_km": (hdc_eco_dist / 1000) if hdc_eco_dist is not None else None,
+            "hdc_power_duration_seconds": getattr(hdc, "power_time", None),
+            "hdc_power_distance_km": (hdc_power_dist / 1000) if hdc_power_dist is not None else None,
             "distance_mi": distance_km * self.KM_TO_MI,
             "mpg": (235.214 / fuel_consumption_l_100km) if fuel_consumption_l_100km > 0 else 0.0,
             "mpg_uk": (282.481 / fuel_consumption_l_100km) if fuel_consumption_l_100km > 0 else 0.0,
