@@ -1,4 +1,20 @@
+import functools
+import inspect
 from pytoyoda.controller import Controller
+from pytoyoda.api import Api
+
+# Patch Api.get_trips to handle signature mismatch (e.g. unexpected 'route' keyword argument) across pytoyoda versions
+_orig_get_trips = Api.get_trips
+
+@functools.wraps(_orig_get_trips)
+async def _patched_get_trips(self, *args, **kwargs):
+    sig = inspect.signature(_orig_get_trips)
+    has_var_keyword = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())
+    if not has_var_keyword:
+        kwargs = {k: v for k, v in kwargs.items() if k in sig.parameters}
+    return await _orig_get_trips(self, *args, **kwargs)
+
+Api.get_trips = _patched_get_trips
 
 class PatchedController(Controller):
     """Intercepts raw API responses to fix missing keys before Pydantic parsing."""
