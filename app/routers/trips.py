@@ -176,7 +176,7 @@ def parse_to_naive_utc(ts_str: str) -> Optional[datetime.datetime]:
 
 @router.post("/raw_responses/check_trips")
 def check_trips_exist(request: CheckTripsRequest):
-    _LOGGER.info(f"check_trips_exist called with {len(request.items)} items: {request.items}")
+    _LOGGER.debug(f"check_trips_exist called with {len(request.items)} items")
     db = database.SessionLocal()
     try:
         ids_to_check = [item.id for item in request.items if item.id]
@@ -188,9 +188,6 @@ def check_trips_exist(request: CheckTripsRequest):
                 if dt:
                     timestamps_to_check.append(dt)
                     
-        _LOGGER.info(f"ids_to_check: {ids_to_check}")
-        _LOGGER.info(f"timestamps_to_check: {timestamps_to_check}")
-        
         existing_ids = set()
         if ids_to_check:
             results = db.query(database.Trip.api_id).filter(database.Trip.api_id.in_(ids_to_check)).all()
@@ -201,9 +198,6 @@ def check_trips_exist(request: CheckTripsRequest):
             results = db.query(database.Trip.start_timestamp).filter(database.Trip.start_timestamp.in_(timestamps_to_check)).all()
             existing_timestamps = {r[0] for r in results if r[0]}
             
-        _LOGGER.info(f"Found existing IDs in DB: {existing_ids}")
-        _LOGGER.info(f"Found existing timestamps in DB: {existing_timestamps}")
-        
         response_map = {}
         for item in request.items:
             exists = False
@@ -218,7 +212,6 @@ def check_trips_exist(request: CheckTripsRequest):
             if key:
                 response_map[key] = exists
                 
-        _LOGGER.info(f"Returning match results: {response_map}")
         return response_map
     finally:
         db.close()

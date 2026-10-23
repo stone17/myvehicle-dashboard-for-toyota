@@ -9,29 +9,78 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function connectToLogStream() {
         logContent.textContent = 'Connecting to log stream...';
+        let isConnectingPlaceholder = true;
+        let pendingLogs = [];
+        let rafScheduled = false;
 
         const eventSource = new EventSource('/api/logs');
 
-        function appendLogLine(logData, fragment = null) {
-            const logLine = document.createElement('span');
-            logLine.className = `log-line ${logData.level}`;
+        function createLogLineElement(logData) {
+            const logLine = document.createElement('div');
+            logLine.className = `log-line ${logData.level || 'INFO'}`;
             logLine.textContent = logData.message;
+            return logLine;
+        }
 
-            const target = fragment || logContent;
-            target.appendChild(logLine);
-            target.appendChild(document.createTextNode('\n'));
+        function isNearBottom() {
+            const threshold = 40;
+            return logContent.scrollHeight - logContent.scrollTop - logContent.clientHeight <= threshold;
+        }
+
+        function flushPendingLogs() {
+            rafScheduled = false;
+            if (pendingLogs.length === 0) return;
+
+            const shouldAutoScroll = isConnectingPlaceholder || isNearBottom();
+
+            if (isConnectingPlaceholder) {
+                logContent.innerHTML = '';
+                isConnectingPlaceholder = false;
+            }
+
+            const batch = pendingLogs;
+            pendingLogs = [];
+
+            // If the incoming batch alone exceeds MAX_LOG_LINES, only render the tail
+            const startIdx = Math.max(0, batch.length - MAX_LOG_LINES);
+            const fragment = document.createDocumentFragment();
+            for (let i = startIdx; i < batch.length; i++) {
+                fragment.appendChild(createLogLineElement(batch[i]));
+            }
+            logContent.appendChild(fragment);
+
+            // Trim old log lines if total exceeds MAX_LOG_LINES
+            while (logContent.childElementCount > MAX_LOG_LINES) {
+                logContent.removeChild(logContent.firstElementChild);
+            }
+
+            if (shouldAutoScroll) {
+                logContent.scrollTop = logContent.scrollHeight;
+            }
+        }
+
+        function scheduleFlush() {
+            if (!rafScheduled) {
+                rafScheduled = true;
+                requestAnimationFrame(flushPendingLogs);
+            }
         }
 
         eventSource.addEventListener('history', function(event) {
             try {
-                logContent.innerHTML = ''; // Clear "Connecting..." message
                 const history = JSON.parse(event.data);
-                const fragment = document.createDocumentFragment();
+                logContent.innerHTML = '';
+                isConnectingPlaceholder = false;
+                pendingLogs = [];
 
-                history.forEach(logData => appendLogLine(logData, fragment));
+                const startIdx = Math.max(0, history.length - MAX_LOG_LINES);
+                const fragment = document.createDocumentFragment();
+                for (let i = startIdx; i < history.length; i++) {
+                    fragment.appendChild(createLogLineElement(history[i]));
+                }
 
                 logContent.appendChild(fragment);
-                logContent.scrollTop = logContent.scrollHeight; // Scroll to bottom after batch update
+                logContent.scrollTop = logContent.scrollHeight;
             } catch (e) {
                 console.error("Failed to parse log history:", event.data, e);
                 logContent.textContent = 'Error loading log history.';
@@ -40,29 +89,24 @@ document.addEventListener('DOMContentLoaded', () => {
 
         eventSource.addEventListener('message', function(event) {
             try {
-                if (logContent.textContent.startsWith('Connecting')) {
-                    logContent.innerHTML = ''; // Clear "Connecting..." if no history was received
-                }
                 const logData = JSON.parse(event.data);
-                appendLogLine(logData);
-
-                // Trim old log lines if the total exceeds the limit
-                while (logContent.childNodes.length > MAX_LOG_LINES * 2) { // *2 because of text nodes
-                    logContent.removeChild(logContent.firstChild);
-                    logContent.removeChild(logContent.firstChild); // Remove accompanying text node
-                }
-
-                // Auto-scroll to the bottom
-                logContent.scrollTop = logContent.scrollHeight;
+                pendingLogs.push(logData);
+                scheduleFlush();
             } catch (e) {
                 console.error("Failed to parse log data:", event.data, e);
             }
         });
 
         eventSource.onerror = function() {
-            logContent.textContent += '\n--- Connection to log stream lost. Reconnecting... ---\n';
-            // The browser will automatically attempt to reconnect.
+            pendingLogs.push({
+                level: 'WARNING',
+                message: '--- Connection to log stream lost. Reconnecting... ---'
+            });
+            scheduleFlush();
         };
+
+        window.addEventListener('pagehide', () => eventSource.close());
+        window.addEventListener('beforeunload', () => eventSource.close());
     }
 
     // Start the connection
@@ -84,20 +128,25 @@ document.addEventListener('DOMContentLoaded', () => {
     let modalMap = null;
     let mapLayers = [];
 
+    let cachedDateFormatter = null;
+    let cachedFormatterTz = null;
+
     function formatTZDate(dateObj) {
         const tz = appConfig?.timezone || 'UTC';
-        const options = {
-            timeZone: tz,
-            year: '2-digit',
-            month: '2-digit',
-            day: '2-digit',
-            hour: '2-digit',
-            minute: '2-digit',
-            hour12: false
-        };
         try {
-            const formatter = new Intl.DateTimeFormat('en-GB', options);
-            const parts = formatter.formatToParts(dateObj);
+            if (!cachedDateFormatter || cachedFormatterTz !== tz) {
+                cachedDateFormatter = new Intl.DateTimeFormat('en-GB', {
+                    timeZone: tz,
+                    year: '2-digit',
+                    month: '2-digit',
+                    day: '2-digit',
+                    hour: '2-digit',
+                    minute: '2-digit',
+                    hour12: false
+                });
+                cachedFormatterTz = tz;
+            }
+            const parts = cachedDateFormatter.formatToParts(dateObj);
             const p = {};
             parts.forEach(part => p[part.type] = part.value);
             return `${p.year}/${p.month}/${p.day}-${p.hour}:${p.minute}`;
@@ -120,7 +169,8 @@ document.addEventListener('DOMContentLoaded', () => {
             // Keep the default option
             const defaultOption = rawPollSelector.querySelector('option[disabled]');
             rawPollSelector.innerHTML = '';
-            if (defaultOption) rawPollSelector.appendChild(defaultOption);
+            const fragment = document.createDocumentFragment();
+            if (defaultOption) fragment.appendChild(defaultOption);
             
             allPolls.forEach(poll => {
                 const opt = document.createElement('option');
@@ -144,8 +194,9 @@ document.addEventListener('DOMContentLoaded', () => {
                         opt.textContent = `${dateStr} (${poll.poll_id})`;
                     }
                 }
-                rawPollSelector.appendChild(opt);
+                fragment.appendChild(opt);
             });
+            rawPollSelector.appendChild(fragment);
         } catch (e) {
             console.error(e);
         }

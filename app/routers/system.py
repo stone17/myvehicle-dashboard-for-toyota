@@ -178,9 +178,14 @@ def list_raw_responses():
             if meta_path.exists():
                 try:
                     with open(meta_path, "r", encoding="utf-8") as mf:
-                        metadata_obj = json.load(mf)
-                        if "updates" in metadata_obj and "trips" in metadata_obj["updates"]:
-                            trip_count = len(metadata_obj["updates"]["trips"])
+                        raw_meta = json.load(mf)
+                        if isinstance(raw_meta, dict) and "updates" in raw_meta:
+                            updates = raw_meta.get("updates") or {}
+                            if "trips" in updates and isinstance(updates["trips"], list):
+                                trip_count = len(updates["trips"])
+                                metadata_obj = {"updates": {"trips": True if trip_count > 0 else []}}
+                            else:
+                                metadata_obj = {"updates": {}}
                 except Exception:
                     pass
 
@@ -242,7 +247,7 @@ def download_poll_zip(poll_id: str, background_tasks: BackgroundTasks):
 @router.get("/raw_responses/{poll_id}/{filename}")
 def get_raw_response(poll_id: str, filename: str):
     from ..config import DATA_DIR
-    _LOGGER.info(f"Requested raw response: poll_id='{poll_id}', filename='{filename}'")
+    _LOGGER.debug(f"Requested raw response: poll_id='{poll_id}', filename='{filename}'")
     
     safe_poll_id = "".join(c for c in poll_id if c.isalnum() or c in "._-")
     safe_filename = "".join(c for c in filename if c.isalnum() or c in "._-")
@@ -259,7 +264,7 @@ def get_raw_response(poll_id: str, filename: str):
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid path.")
     
-    _LOGGER.info(f"Resolved file_path: '{file_path}', exists: {file_path.exists()}, is_file: {file_path.is_file() if file_path.exists() else False}")
+    _LOGGER.debug(f"Resolved file_path: '{file_path}', exists: {file_path.exists()}, is_file: {file_path.is_file() if file_path.exists() else False}")
     
     if not file_path.exists() or not file_path.is_file():
         raise HTTPException(status_code=404, detail="Raw response file not found.")
@@ -294,8 +299,11 @@ def update_config(new_settings: dict = Body(...)):
         # 4. Reload the configuration into memory for the running app
         config_manager.load()
 
-        # 5. Re-apply logging settings
+        # 5. Re-apply logging settings and history size
         setup_logging()
+        if "log_history_size" in config_manager.settings:
+            from ..main import update_log_history_size
+            update_log_history_size(config_manager.settings["log_history_size"])
 
         return {"message": "Settings saved successfully."}
     except Exception as e:
