@@ -6,7 +6,7 @@ import time
 import datetime
 import logging
 from collections import deque
-from typing import Deque, Dict
+from typing import Deque, Dict, Set, Tuple, Optional
 
 # Fix for Windows asyncio ProactorEventLoop socket shutdown errors
 if sys.platform == 'win32':
@@ -46,17 +46,49 @@ _LOGGER = logging.getLogger(__name__)
 # --- Live Log Streaming Setup ---
 log_history_size = config_manager.settings.get("log_history_size", 200)
 log_history: Deque[Dict] = deque(maxlen=log_history_size)
-log_queue = asyncio.Queue()
+log_subscribers: Set[Tuple[asyncio.Queue, Optional[asyncio.AbstractEventLoop]]] = set()
+
+
+def update_log_history_size(new_size: int):
+    """Dynamically resizes the in-memory log history deque."""
+    global log_history, log_history_size
+    try:
+        size = max(10, min(5000, int(new_size)))
+    except (TypeError, ValueError):
+        return
+    if size != log_history.maxlen:
+        log_history_size = size
+        log_history = deque(log_history, maxlen=size)
+
+
+def _enqueue_log_entry(q: asyncio.Queue, entry: Dict):
+    if q.full():
+        try:
+            q.get_nowait()
+            q.task_done()
+        except asyncio.QueueEmpty:
+            pass
+    try:
+        q.put_nowait(entry)
+    except asyncio.QueueFull:
+        pass
+
 
 class WebLogHandler(logging.Handler):
     """A custom logging handler that captures logs for the web UI."""
     def emit(self, record):
         log_entry = {"level": record.levelname, "message": self.format(record)}
         log_history.append(log_entry)
-        try:
-            log_queue.put_nowait(log_entry)
-        except asyncio.QueueFull:
-            pass
+        if not log_subscribers:
+            return
+        for q, loop in list(log_subscribers):
+            try:
+                if loop is not None and not loop.is_closed():
+                    loop.call_soon_threadsafe(_enqueue_log_entry, q, log_entry)
+                else:
+                    _enqueue_log_entry(q, log_entry)
+            except Exception:
+                pass
 
 web_log_handler = WebLogHandler()
 web_log_handler.setFormatter(
@@ -221,20 +253,31 @@ async def shutdown_event():
 
 async def log_stream_generator(request: Request):
     """Yields historical logs as a single batch, then streams live log messages as Server-Sent Events."""
-    initial_history = list(log_history)
-    if initial_history:
-        yield f"event: history\ndata: {json.dumps(initial_history)}\n\n"
+    client_queue: asyncio.Queue = asyncio.Queue(maxsize=500)
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+    subscriber = (client_queue, loop)
+    log_subscribers.add(subscriber)
 
-    while True:
-        if await request.is_disconnected():
-            _LOGGER.debug("Log stream client disconnected.")
-            break
-        try:
-            log_entry = await asyncio.wait_for(log_queue.get(), timeout=30)
-            yield f"event: message\ndata: {json.dumps(log_entry)}\n\n"
-            log_queue.task_done()
-        except asyncio.TimeoutError:
-            yield ": keep-alive\n\n"
+    try:
+        initial_history = list(log_history)
+        if initial_history:
+            yield f"event: history\ndata: {json.dumps(initial_history)}\n\n"
+
+        while True:
+            if await request.is_disconnected():
+                _LOGGER.debug("Log stream client disconnected.")
+                break
+            try:
+                log_entry = await asyncio.wait_for(client_queue.get(), timeout=15)
+                yield f"event: message\ndata: {json.dumps(log_entry)}\n\n"
+                client_queue.task_done()
+            except asyncio.TimeoutError:
+                yield ": keep-alive\n\n"
+    finally:
+        log_subscribers.discard(subscriber)
 
 @app.get("/api/logs")
 async def stream_logs(request: Request):
